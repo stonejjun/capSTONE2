@@ -131,6 +131,11 @@ namespace Server{
 			arr[0]={t,u}; //arr[0] should never changes..?
 			addr_idx[t]=0;
 		}
+		addr_t one(){
+			if(ssize(arr) > 1)
+				return arr[1].second;
+			return 0;
+		}
 		std::vector<std::pair<tcp_t,LinkProfile>> addPeer(tcp_t t,addr_t u){
 			std::vector<std::pair<tcp_t,LinkProfile>> res;
 			int i=ssize(arr);
@@ -234,6 +239,24 @@ void server_tcp_recv( Ptr<const Packet> packet, const Address & address){
 void client_tcp_recv( Ptr<const Packet> packet, const Address & address){
 	
 }
+void server_send_chunk(bytes chunk){ // chunk includes chunk id
+	ull u = Server::server_address.one();
+	auto[ip,port]=fromull(u);
+	SendUdpPacket( 0 // server is node 0
+		, ip
+		, port
+		, bytes("\x01")+chunk // 1 means data
+	);
+}
+bytes chunks[num_of_chunk];
+char server_validation(int i,bytes code){
+	int n=ssize(code);
+	if(n%5)return 0;
+	for(int j=0;j<n;j+=5)
+		if(chunks[i][*(uint32_t*)&code[j]]!=code[j+4])
+			return 0;
+	return 1;
+}
 void server_udp_recv( Ptr<Socket> socket){
 	Ptr<Packet> packet;
 	Address address;
@@ -241,6 +264,18 @@ void server_udp_recv( Ptr<Socket> socket){
 		string payload(packet->GetSize(),char(0));
 		packet->CopyData((uint8_t*)&payload[0],packet->GetSize());
 		switch(payload[0]){
+		case 2:
+			SendUdpPacket( 0 // server is node 0
+				, InetSocketAddress::ConvertFrom(address).GetIpv4()
+				, *(uint16_t*)&payload[3]
+				, bytes("\x00")+payload.substr(1,4)+bytes(1,  // 0 means validation result
+					server_validation(*(uint32_t*)&payload[1],payload.substr(7))
+				)
+			);
+			break;
+		case 3:
+			server_send_chunk(chunks[*(uint32_t*)&payload[1]]);
+			break;
 		default:
 			; // work similer with client
 		}
@@ -268,12 +303,18 @@ void client_init(int i, Ipv4Address sip, uint16_t port){
 		socket->Send(packet);
 	}));
 }
-void server_send_chunk(bytes chunk){
-	
+
+void chunk_init(){
+	for(int i=0;i<num_of_chunk;i++){
+		chunks[i] = bytes(1028,'.');
+		chunks[i][0]=i%256;
+		chunks[i][1]=i/256%256;
+		chunks[i][2]=i/256/256%256;
+		chunks[i][3]=i/256/256/256%256;
+		for(int j=4;j<1028;j++)
+			chunks[i][j]=rand()%256;
+	}
 }
-
-bytes chunks[num_of_chunk];
-
 void setting(Ipv4InterfaceContainer ipif){
 	uint16_t udpPort=8080, tcpPort = 8081; // tcp port of server ....and also of client now
 	
@@ -304,7 +345,7 @@ void setting(Ipv4InterfaceContainer ipif){
 		}
 		else{
 			for(int i=0;i<num_of_chunk;i++){
-				
+				Simulator::Schedule(server_send_chunk,chunks[i]);
 			}
 		}
 	}
@@ -331,6 +372,7 @@ int main(int argc, char *argv[]) {
 	address.SetBase("10.1.1.0", "255.255.255.0");
 	Ipv4InterfaceContainer interfaces = address.Assign(devices); //important
 	
+	chunk_init();
 	setting(interfaces); // we will modify this function
 	
 	// let's go
